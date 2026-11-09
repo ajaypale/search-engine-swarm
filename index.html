@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SwarmSearch — Distributed Client-Side Search Engine</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Roboto+Mono:wght@400;500&family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+  <!-- Top Navigation Bar -->
+  <header class="top-nav">
+    <div class="nav-left">
+      <span class="badge-tag">SWARM ARCHITECTURE</span>
+      <span class="status-indicator online" id="connection-status">
+        <span class="dot"></span> <span id="status-text">Client Node Active</span>
+      </span>
+    </div>
+    <div class="nav-right">
+      <button class="nav-btn" id="btn-toggle-hud">⚡ Swarm HUD</button>
+      <button class="nav-btn" id="btn-toggle-submit">+ Submit Site</button>
+      <button class="nav-btn secondary" id="btn-config">⚙️ Firebase Settings</button>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="main-container" id="main-view">
+    
+    <!-- PHASE 1: SEARCH INTERFACE (Google-Inspired) -->
+    <section class="search-hero" id="search-section">
+      <div class="brand-logo">
+        <span class="logo-s">S</span><span class="logo-w">w</span><span class="logo-a">a</span><span class="logo-r">r</span><span class="logo-m">m</span>
+        <span class="logo-sub">Search</span>
+      </div>
+      <p class="hero-tagline">The world's first search engine indexed entirely by user devices at the edge.</p>
+
+      <form class="search-form" id="search-form">
+        <div class="search-input-wrapper">
+          <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <circle cx="11" cy="11" r="8" stroke-width="2"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65" stroke-width="2"></line>
+          </svg>
+          <input type="text" id="search-input" placeholder="Search the swarm index or enter keywords..." autocomplete="off">
+          <button type="button" class="clear-btn" id="search-clear" style="display:none;">&times;</button>
+        </div>
+        <div class="search-actions">
+          <button type="submit" class="primary-btn">Swarm Search</button>
+          <button type="button" class="secondary-btn" id="btn-lucky">I'm Feeling Decentralized</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- SEARCH RESULTS CONTAINER -->
+    <section class="results-container" id="results-container" style="display: none;">
+      <div class="results-meta" id="results-meta">About 0 results (0.01 seconds)</div>
+      
+      <!-- AI OVERVIEW CARD (GOOGLE AI STYLE) -->
+      <div class="ai-overview-card" id="ai-overview-card">
+        <div class="ai-overview-header">
+          <div class="ai-sparkle-title">
+            <svg class="ai-sparkle-icon" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 2L14.4 7.6L20 10L14.4 12.4L12 18L9.6 12.4L4 10L9.6 7.6L12 2Z"></path>
+              <path d="M19 15L20.2 17.8L23 19L20.2 20.2L19 23L17.8 20.2L15 19L17.8 17.8L19 15Z"></path>
+            </svg>
+            <span>Swarm AI Overview</span>
+          </div>
+          <span class="ai-badge">Synthesized at Edge</span>
+        </div>
+        <div class="ai-overview-body" id="ai-overview-body">
+          <div class="ai-loading-pulse">
+            <div class="ai-pulse-bar w-3-4"></div>
+            <div class="ai-pulse-bar w-full"></div>
+            <div class="ai-pulse-bar w-5-6"></div>
+          </div>
+        </div>
+        <div class="ai-sources-row" id="ai-sources-row">
+          <!-- Source pills will be injected here -->
+        </div>
+      </div>
+
+      <div class="results-list" id="results-list">
+        <!-- Rendered results will appear here -->
+      </div>
+    </section>
+
+  </main>
+
+  <!-- PHASE 2: SITE SUBMISSION DRAWER / MODAL -->
+  <div class="modal-overlay" id="submit-modal" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Submit a Website for Swarm Indexing</h3>
+        <button class="close-btn" id="close-submit-modal">&times;</button>
+      </div>
+      <p class="modal-desc">Submitted URLs are instantly pushed to the <strong>Firebase Frontier</strong> queue. Distributed client nodes will fetch, extract, verify, and index them.</p>
+      
+      <form id="submit-site-form">
+        <div class="form-group">
+          <label for="submit-url">Target URL or Domain Name:</label>
+          <input type="text" id="submit-url" placeholder="example.com or https://example.com" required>
+        </div>
+        <div class="form-group">
+          <label>Crawl Priority:</label>
+          <select id="submit-priority">
+            <option value="high">High (Immediate Swarm Dispatch)</option>
+            <option value="normal" selected>Normal</option>
+            <option value="deep">Deep Crawl (Follow Outbound Links)</option>
+          </select>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="secondary-btn" id="btn-cancel-submit">Cancel</button>
+          <button type="submit" class="primary-btn">Push to Frontier Queue</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- FIREBASE CONFIG MODAL -->
+  <div class="modal-overlay" id="config-modal" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Firebase Project Configuration</h3>
+        <button class="close-btn" id="close-config-modal">&times;</button>
+      </div>
+      <p class="modal-desc">Connect directly to your Cloud Firestore database and Firebase Authentication. Default is <strong>Integrated Local Swarm Store</strong>.</p>
+      
+      <form id="firebase-config-form">
+        <div class="form-group">
+          <label>Storage Backend Mode:</label>
+          <select id="cfg-backend-mode">
+            <option value="local">Local Mock Firestore (Instant In-Memory/IndexedDB)</option>
+            <option value="firebase">Live Firebase Cloud Firestore</option>
+          </select>
+        </div>
+        <div class="firebase-fields" id="firebase-fields" style="display: none;">
+          <div class="form-group">
+            <label>API Key:</label>
+            <input type="text" id="cfg-apiKey" placeholder="AIzaSy...">
+          </div>
+          <div class="form-group">
+            <label>Project ID:</label>
+            <input type="text" id="cfg-projectId" placeholder="my-swarm-project">
+          </div>
+          <div class="form-group">
+            <label>Auth Domain:</label>
+            <input type="text" id="cfg-authDomain" placeholder="my-swarm-project.firebaseapp.com">
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="secondary-btn" id="btn-cancel-config">Close</button>
+          <button type="submit" class="primary-btn">Save Configuration</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- PHASE 2: SWARM TELEMETRY & CLIENT CRAWLER HUD (COLLAPSIBLE DRAWER) -->
+  <aside class="swarm-hud" id="swarm-hud">
+    <div class="hud-header">
+      <div class="hud-title">
+        <span class="hud-pulse"></span>
+        <h4>Client Swarm Node</h4>
+      </div>
+      <div class="hud-controls">
+        <label class="switch" title="Toggle client-side crawling on this device">
+          <input type="checkbox" id="toggle-crawler-active" checked>
+          <span class="slider round"></span>
+        </label>
+        <button class="icon-btn" id="btn-minimize-hud">&minus;</button>
+      </div>
+    </div>
+
+    <!-- Live Metrics Grid -->
+    <div class="hud-metrics">
+      <div class="metric-card">
+        <span class="metric-label">Frontier Queue</span>
+        <span class="metric-value" id="stat-frontier">0</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Indexed Docs</span>
+        <span class="metric-value" id="stat-indexed">0</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Parsed by Device</span>
+        <span class="metric-value highlight" id="stat-device-crawled">0</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Device Status</span>
+        <span class="metric-badge" id="stat-worker-status">Idle</span>
+      </div>
+    </div>
+
+    <!-- Active Task Details -->
+    <div class="hud-current-task">
+      <div class="task-title">CURRENT TASK (CLIENT-SIDE DOM ENGINE):</div>
+      <div class="task-url" id="current-task-url">Waiting for pending tasks in frontier...</div>
+      <div class="task-hash" id="current-task-hash">SHA-256: —</div>
+    </div>
+
+    <!-- Live Telemetry Terminal Log -->
+    <div class="hud-terminal">
+      <div class="terminal-bar">
+        <span>SWARM EVENT STREAM</span>
+        <button class="clear-terminal" id="btn-clear-log">Clear</button>
+      </div>
+      <div class="terminal-body" id="terminal-log">
+        <div class="log-line info">[INIT] Client-side DOM parsing engine initialized.</div>
+        <div class="log-line info">[AUTH] Anonymous device identity registered.</div>
+        <div class="log-line success">[READY] Connected to swarm task dispatcher.</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Scripts -->
+  <script src="firebase-config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

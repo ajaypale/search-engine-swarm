@@ -1,0 +1,10 @@
+# Runtime and large datasets
+node_modules/
+search-index.jsonl
+*.log
+venv/
+__pycache__/
+swarm.db
+priority-submissions.json
+.DS_Store
+Thumbs.db

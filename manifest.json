@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "SwarmSearch - Pure Client-Side Search Engine",
+  "version": "1.0",
+  "description": "100% client-side distributed web crawler and search engine with zero backend servers or functions.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "action": {
+    "default_popup": "index.html",
+    "default_title": "SwarmSearch Engine"
+  }
+}

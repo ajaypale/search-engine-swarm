@@ -1,0 +1,13 @@
+{
+  "name": "search-engine-swarm",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Pure JavaScript distributed search engine crawler and indexing swarm",
+  "main": "deploy.js",
+  "scripts": {
+    "start": "node deploy.js",
+    "deploy": "node deploy.js",
+    "server": "node server.js",
+    "worker": "node swarm-worker.js"
+  }
+}
