@@ -304,12 +304,13 @@ class UniversalParserEngine {
   }
 
   tokenize(text) {
-    const stopWords = new Set(['the','and','a','to','of','in','is','it','that','you','for','on','with','as','this','by','at','an','be','from','or','are','was']);
+    const stopWords = new Set(['the','and','a','to','of','in','is','it','that','you','for','on','with','as','this','by','at','an','be','from','or','are','was','do','if','so','no','up','he','we','my','me']);
+    const allowedTwoLetterTerms = new Set(['ev', 'ai', 'ui', 'os', 'ml', 'vr', 'ar', 'ip', 'db', 'id', 'qa', 'pr']);
     return Array.from(new Set(
       text.toLowerCase()
         .replace(/[^a-z0-9\s]/g, ' ')
         .split(/\s+/)
-        .filter(w => w.length > 2 && !stopWords.has(w))
+        .filter(w => (w.length > 2 || allowedTwoLetterTerms.has(w)) && !stopWords.has(w))
     ));
   }
 }

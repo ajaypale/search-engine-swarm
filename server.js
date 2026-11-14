@@ -157,7 +157,21 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    const terms = q.split(/\s+/).filter(Boolean);
+    const expansions = {
+      'ev': ['ev', 'evs', 'electric vehicle', 'electric vehicles', 'electric car', 'electric scooter', 'ev charger', 'battery pack'],
+      'ai': ['ai', 'artificial intelligence', 'machine learning', 'deep learning', 'neural'],
+      'b2b': ['b2b', 'wholesale', 'manufacturers', 'suppliers', 'exporters'],
+      'seo': ['seo', 'search engine optimization', 'rankings', 'google search'],
+      'api': ['api', 'rest api', 'endpoints', 'interface', 'sdk']
+    };
+
+    const searchCandidates = new Set([q]);
+    for (const [key, terms] of Object.entries(expansions)) {
+      if (new RegExp(`\\b${key}\\b`, 'i').test(q)) {
+        terms.forEach(t => searchCandidates.add(t));
+      }
+    }
+
     const matches = [];
 
     for (const doc of fastSearchIndex) {
@@ -166,13 +180,30 @@ const server = http.createServer(async (req, res) => {
       const lowerUrl = (doc.url || '').toLowerCase();
 
       let score = 0;
-      if (lowerTitle.includes(q)) score += 30;
-      if (lowerUrl.includes(q)) score += 20;
-      if (lowerContent.includes(q)) score += 10;
 
-      for (const t of terms) {
-        if (lowerTitle.includes(t)) score += 5;
-        if (lowerContent.includes(t)) score += 2;
+      // 1. Direct Whole Phrase
+      if (lowerTitle.includes(q)) score += 80;
+      if (lowerContent.includes(q)) score += 20;
+
+      // 2. Strict Word-Boundary Match for Acronyms & Candidates
+      for (const term of searchCandidates) {
+        const isShort = term.length <= 3;
+        const safeTerm = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const wordRegex = new RegExp(`\\b${safeTerm}\\b`, 'i');
+
+        if (wordRegex.test(lowerTitle)) {
+          score += 60;
+        } else if (!isShort && lowerTitle.includes(term)) {
+          score += 10;
+        }
+
+        if (wordRegex.test(lowerContent)) {
+          score += 25;
+        } else if (!isShort && lowerContent.includes(term)) {
+          score += 5;
+        }
+
+        if (wordRegex.test(lowerUrl)) score += 40;
       }
 
       if (score > 0) {

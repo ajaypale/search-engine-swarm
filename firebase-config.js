@@ -170,6 +170,26 @@ class SwarmStorageAdapter {
 
   // --- SEARCH QUERY OPERATIONS ---
 
+  expandQueryTerms(query) {
+    const qLower = query.trim().toLowerCase();
+    const expansions = {
+      'ev': ['ev', 'evs', 'electric vehicle', 'electric vehicles', 'electric car', 'electric scooter', 'ev charger', 'battery pack'],
+      'ai': ['ai', 'artificial intelligence', 'machine learning', 'deep learning', 'neural'],
+      'b2b': ['b2b', 'wholesale', 'manufacturers', 'suppliers', 'exporters'],
+      'seo': ['seo', 'search engine optimization', 'rankings', 'google search'],
+      'api': ['api', 'rest api', 'endpoints', 'interface', 'sdk']
+    };
+
+    const expanded = new Set([qLower]);
+    for (const [key, terms] of Object.entries(expansions)) {
+      const reg = new RegExp(`\\b${key}\\b`, 'i');
+      if (reg.test(qLower)) {
+        terms.forEach(t => expanded.add(t));
+      }
+    }
+    return Array.from(expanded);
+  }
+
   async searchIndex(query) {
     const q = query.trim().toLowerCase();
     if (!q) return [];
@@ -185,19 +205,47 @@ class SwarmStorageAdapter {
       }
     }
 
-    const terms = q.split(/\s+/).filter(Boolean);
+    const searchCandidates = this.expandQueryTerms(q);
+    const rawTerms = q.split(/\s+/).filter(Boolean);
 
-    // Simple ranked matching
+    // Advanced relevance-ranked matching with whole-word boundary protection
     const results = index.map(doc => {
       let score = 0;
-      const lowerTitle = doc.title.toLowerCase();
-      const lowerContent = doc.content.toLowerCase();
+      const lowerTitle = (doc.title || '').toLowerCase();
+      const lowerContent = (doc.content || '').toLowerCase();
+      const lowerUrl = (doc.url || '').toLowerCase();
+      const keywords = (doc.keywords || []).map(k => String(k).toLowerCase());
 
-      terms.forEach(term => {
-        if (lowerTitle.includes(term)) score += 10;
-        if (doc.keywords && doc.keywords.includes(term)) score += 5;
-        if (lowerContent.includes(term)) score += 1;
-      });
+      // 1. Direct Whole-Phrase Match
+      if (lowerTitle.includes(q)) score += 80;
+      if (lowerContent.includes(q)) score += 20;
+
+      // 2. Query Term Evaluation with Strict Word Boundary for Short Acronyms
+      for (const term of searchCandidates) {
+        const isShort = term.length <= 3;
+        // Escape regex special chars
+        const safeTerm = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const wordRegex = new RegExp(`\\b${safeTerm}\\b`, 'i');
+
+        // Whole-word match in title
+        if (wordRegex.test(lowerTitle)) {
+          score += 60;
+        } else if (!isShort && lowerTitle.includes(term)) {
+          // Substring allowed ONLY for terms longer than 3 characters
+          score += 10;
+        }
+
+        // Whole-word match in content
+        if (wordRegex.test(lowerContent)) {
+          score += 25;
+        } else if (!isShort && lowerContent.includes(term)) {
+          score += 5;
+        }
+
+        // Whole-word match in keywords or URL
+        if (keywords.includes(term)) score += 30;
+        if (wordRegex.test(lowerUrl)) score += 40;
+      }
 
       return { ...doc, score };
     })
