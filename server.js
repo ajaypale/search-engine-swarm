@@ -38,29 +38,44 @@ const MIME_TYPES = {
 let fastSearchIndex = [];
 
 async function buildFastSearchIndex() {
-  if (!existsSync(INDEX_STREAM_FILE)) return;
-  const docs = [];
-  const rl = readline.createInterface({
-    input: createReadStream(INDEX_STREAM_FILE, { encoding: 'utf-8' }),
-    crlfDelay: Infinity
-  });
+  const curatedDocs = [];
+  const streamDocs = [];
 
-  for await (const line of rl) {
-    if (!line.trim()) continue;
-    try {
-      const doc = JSON.parse(line);
-      docs.unshift({
-        url: doc.url,
-        title: doc.title,
-        content: doc.content ? doc.content.slice(0, 1000) : '',
-        content_hash: doc.content_hash,
-        verification_status: doc.verification_status || 'verified',
-        indexed_at: doc.indexed_at
-      });
-      if (docs.length >= 5000) docs.pop(); // Keep top 5,000 freshest in RAM
-    } catch {}
+  // 1. First load curated snapshot from swarm-data.json (guaranteed EV, B2B, Tech docs - permanently protected from eviction)
+  try {
+    if (existsSync(SWARM_DATA_FILE)) {
+      const sData = JSON.parse(await fs.readFile(SWARM_DATA_FILE, 'utf-8'));
+      if (sData && sData.search_index) {
+        curatedDocs.push(...sData.search_index);
+      }
+    }
+  } catch {}
+
+  // 2. Supplement with freshest lines from streaming log
+  if (existsSync(INDEX_STREAM_FILE)) {
+    const rl = readline.createInterface({
+      input: createReadStream(INDEX_STREAM_FILE, { encoding: 'utf-8' }),
+      crlfDelay: Infinity
+    });
+
+    for await (const line of rl) {
+      if (!line.trim()) continue;
+      try {
+        const doc = JSON.parse(line);
+        streamDocs.unshift({
+          url: doc.url,
+          title: doc.title,
+          content: doc.content ? doc.content.slice(0, 1000) : '',
+          content_hash: doc.content_hash,
+          verification_status: doc.verification_status || 'verified',
+          indexed_at: doc.indexed_at
+        });
+        if (streamDocs.length >= 5000) streamDocs.pop(); // Keep stream bounded
+      } catch {}
+    }
   }
-  fastSearchIndex = docs;
+
+  fastSearchIndex = [...curatedDocs, ...streamDocs];
   console.log(`[SEARCH ENGINE] Loaded ${fastSearchIndex.length} high-priority indexed pages into Fast Search Cache.`);
 }
 
@@ -181,9 +196,16 @@ const server = http.createServer(async (req, res) => {
 
       let score = 0;
 
-      // 1. Direct Whole Phrase
-      if (lowerTitle.includes(q)) score += 80;
-      if (lowerContent.includes(q)) score += 20;
+      // 1. Direct Whole-Phrase Match (Strict word-boundary for short queries <= 3 chars)
+      const isQueryShort = q.length <= 3;
+      if (isQueryShort) {
+        const wholeQueryRegex = new RegExp(`\\b${q}\\b`, 'i');
+        if (wholeQueryRegex.test(lowerTitle)) score += 100;
+        if (wholeQueryRegex.test(lowerContent)) score += 30;
+      } else {
+        if (lowerTitle.includes(q)) score += 80;
+        if (lowerContent.includes(q)) score += 20;
+      }
 
       // 2. Strict Word-Boundary Match for Acronyms & Candidates
       for (const term of searchCandidates) {
