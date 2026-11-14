@@ -1,0 +1,49 @@
+{
+  "hosting": {
+    "target": "swarm",
+    "public": ".",
+    "ignore": [
+      "firebase.json",
+      ".firebaserc",
+      "**/.*",
+      "**/node_modules/**",
+      "search-index.jsonl",
+      "*.py",
+      "*.db",
+      "venv/**",
+      "__pycache__/**",
+      "docs/**",
+      "test-*.js",
+      "build-deploy-index.js",
+      "client.py",
+      "server.py",
+      "test-alibaba.js",
+      "test-alibaba-parse.js",
+      "index-alibaba.js"
+    ],
+    "headers": [
+      {
+        "source": "**",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=3600"
+          },
+          {
+            "key": "Access-Control-Allow-Origin",
+            "value": "*"
+          }
+        ]
+      },
+      {
+        "source": "swarm-data.json",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache, no-store, must-revalidate"
+          }
+        ]
+      }
+    ]
+  }
+}

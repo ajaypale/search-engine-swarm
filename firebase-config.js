@@ -24,13 +24,17 @@ class SwarmStorageAdapter {
   }
 
   initLocalStore() {
+    this.cachedIndex = null;
     // Attempt to load from swarm-data.json if present
     fetch('swarm-data.json')
       .then(r => r.json())
       .then(fileData => {
         if (fileData && fileData.search_index && fileData.search_index.length > 0) {
-          localStorage.setItem('swarm_index', JSON.stringify(fileData.search_index));
-          localStorage.setItem('swarm_frontier', JSON.stringify(fileData.frontier));
+          this.cachedIndex = fileData.search_index;
+          try {
+            localStorage.setItem('swarm_index', JSON.stringify(fileData.search_index.slice(0, 100)));
+            localStorage.setItem('swarm_frontier', JSON.stringify(fileData.frontier.slice(0, 100)));
+          } catch {}
         }
       })
       .catch(() => {});
@@ -170,7 +174,17 @@ class SwarmStorageAdapter {
     const q = query.trim().toLowerCase();
     if (!q) return [];
 
-    const index = JSON.parse(localStorage.getItem('swarm_index') || '[]');
+    let index = [];
+    if (this.cachedIndex && this.cachedIndex.length > 0) {
+      index = this.cachedIndex;
+    } else {
+      try {
+        index = JSON.parse(localStorage.getItem('swarm_index') || '[]');
+      } catch {
+        index = [];
+      }
+    }
+
     const terms = q.split(/\s+/).filter(Boolean);
 
     // Simple ranked matching

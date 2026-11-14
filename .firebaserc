@@ -1,0 +1,15 @@
+{
+  "projects": {
+    "default": "palengineersajaypal"
+  },
+  "targets": {
+    "palengineersajaypal": {
+      "hosting": {
+        "swarm": [
+          "pal-swarm-search"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}

@@ -4,6 +4,14 @@ A high-performance, 100% client-side distributed search engine and web indexing 
 
 ---
 
+## 🌍 Live Global Deployment
+
+* **Public Web Search Engine:** **[https://pal-swarm-search.web.app](https://pal-swarm-search.web.app)**
+* **Alternative Domain:** [https://pal-swarm-search.firebaseapp.com](https://pal-swarm-search.firebaseapp.com)
+* **GitHub Repository:** [https://github.com/ajaypale/search-engine-swarm](https://github.com/ajaypale/search-engine-swarm)
+
+---
+
 ## ⚡ Core Architecture
 
 * **100% Client-Side Engine:** Built entirely in modern pure JavaScript (ES modules, Node.js v20+).

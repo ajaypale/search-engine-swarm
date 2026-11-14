@@ -427,16 +427,25 @@ document.addEventListener('DOMContentLoaded', () => {
       const data = await res.json();
 
       if (data && data.search_index && data.frontier) {
-        // Update local storage for search engine instant access
-        localStorage.setItem('swarm_index', JSON.stringify(data.search_index));
-        localStorage.setItem('swarm_frontier', JSON.stringify(data.frontier));
+        // Keep full curated index in memory for instant high-speed edge search
+        if (window.swarmStorage) {
+          window.swarmStorage.cachedIndex = data.search_index;
+        }
+
+        // Safe storage for offline caching without exceeding 5MB localStorage quota
+        try {
+          localStorage.setItem('swarm_index', JSON.stringify(data.search_index.slice(0, 100)));
+          localStorage.setItem('swarm_frontier', JSON.stringify(data.frontier.slice(0, 100)));
+        } catch (e) {
+          console.warn('[STORAGE] LocalStorage quota reached, running purely in high-speed RAM mode.');
+        }
 
         // Update HUD stats
         const pending = data.frontier.filter(f => f.status === 'pending').length;
         const completed = data.frontier.filter(f => f.status === 'completed').length;
 
         statFrontier.textContent = pending;
-        statIndexed.textContent = data.total_indexed || data.search_index.length;
+        statIndexed.textContent = (data.total_indexed || data.search_index.length).toLocaleString();
         statDeviceCrawled.textContent = completed;
 
         // Display the most recently crawled document
