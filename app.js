@@ -232,14 +232,23 @@ document.addEventListener('DOMContentLoaded', () => {
     submitUrlInput.value = '';
     closeSubmit();
 
+    // 1. Instantly unminimize the Swarm HUD so the user can watch the real-time processing window!
+    swarmHud.classList.remove('minimized');
+
+    // 2. Immediate live UI status update
+    statWorkerStatus.textContent = 'Prioritizing Slot #1';
+    statWorkerStatus.style.color = '#00e676';
+    currentTaskUrl.textContent = url;
+    currentTaskHash.textContent = 'Enqueuing to Preemption Engine...';
+
     logToHud(`[SUBMIT] Pushing seed URL to Swarm Preemption Engine: ${url}`, 'info');
 
-    // 1. Instant Edge Queue: Register with High Priority in Local Storage
+    // 3. Instant Edge Queue: Register with High Priority in Local Storage
     const queueRes = await window.swarmStorage.submitSeedUrl(url);
     logToHud(`[QUEUE] ${queueRes.message}`, 'success');
     updateHudStats();
 
-    // 2. Local Server Bridge Notification (if running locally or connected to node daemon)
+    // 4. Local Server Bridge Notification (if running locally or connected to node daemon)
     try {
       const res = await fetch('/api/submit', {
         method: 'POST',
@@ -256,7 +265,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // Expected on static CDN deployments (Firebase Hosting) - fallback to direct client worker
     }
 
-    // 3. IMMEDIATE PREEMPTION: Execute crawler cycle immediately without waiting for interval
+    // 5. IMMEDIATE PREEMPTION: Execute crawler cycle immediately without waiting for interval
     logToHud(`[PREEMPTION] Prioritizing ${url} to Slot #1 - Launching Client DOM Engine...`, 'success');
     if (!isCrawlerRunning) {
       toggleCrawler.checked = true;
@@ -469,6 +478,9 @@ document.addEventListener('DOMContentLoaded', () => {
       deviceCrawledCount++;
       statDeviceCrawled.textContent = deviceCrawledCount;
       logToHud(`[INGEST] "${parsed.title.slice(0, 32)}..." indexed! Found ${submitRes.newLinksAdded} outbound links.`, 'success');
+      logToHud(`[DATABASE] Ingested to local swarm index. Instantly searchable!`, 'success');
+
+      updateHudStats();
 
       // Re-trigger immediately if there are more pending tasks in queue
       setTimeout(runClientWorkerCycle, 300);
@@ -480,6 +492,25 @@ document.addEventListener('DOMContentLoaded', () => {
       statWorkerStatus.textContent = 'Idle';
       statWorkerStatus.style.color = '#fbbc05';
       updateHudStats();
+    }
+  }
+
+  // --- REAL-TIME TELEMETRY STATS UPDATE ---
+  function updateHudStats() {
+    try {
+      const localFrontier = JSON.parse(localStorage.getItem('swarm_frontier') || '[]');
+      const pendingCount = localFrontier.filter(f => f.status === 'pending').length;
+
+      let totalIndexed = 1512;
+      if (window.swarmStorage && window.swarmStorage.cachedIndex && window.swarmStorage.cachedIndex.length > 0) {
+        totalIndexed = window.swarmStorage.cachedIndex.length;
+      }
+
+      if (statFrontier) statFrontier.textContent = pendingCount;
+      if (statIndexed) statIndexed.textContent = totalIndexed.toLocaleString();
+      if (statDeviceCrawled) statDeviceCrawled.textContent = deviceCrawledCount;
+    } catch (e) {
+      console.warn('[HUD] Stats update error:', e);
     }
   }
 
@@ -527,10 +558,10 @@ document.addEventListener('DOMContentLoaded', () => {
         // Update HUD stats
         const currentFrontier = JSON.parse(localStorage.getItem('swarm_frontier') || '[]');
         const pendingCount = currentFrontier.filter(f => f.status === 'pending').length;
-        const totalIndexedCount = (data.total_indexed || (window.swarmStorage && window.swarmStorage.cachedIndex ? window.swarmStorage.cachedIndex.length : 1500));
+        const totalIndexedCount = (data.total_indexed || (window.swarmStorage && window.swarmStorage.cachedIndex ? window.swarmStorage.cachedIndex.length : 1512));
 
-        statFrontier.textContent = pendingCount;
-        statIndexed.textContent = totalIndexedCount.toLocaleString();
+        if (statFrontier) statFrontier.textContent = pendingCount;
+        if (statIndexed) statIndexed.textContent = totalIndexedCount.toLocaleString();
 
         // Display current active document if worker is idle
         if (!isCurrentlyProcessing && window.swarmStorage && window.swarmStorage.cachedIndex && window.swarmStorage.cachedIndex.length > 0) {

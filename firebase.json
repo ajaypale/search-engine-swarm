@@ -8,6 +8,9 @@
       "**/.*",
       "**/node_modules/**",
       "search-index.jsonl",
+      "frontier-queue.json",
+      "priority-submissions.json",
+      "firebase-debug.log",
       "*.py",
       "*.db",
       "venv/**",
@@ -17,9 +20,11 @@
       "build-deploy-index.js",
       "client.py",
       "server.py",
-      "test-alibaba.js",
-      "test-alibaba-parse.js",
-      "index-alibaba.js"
+      "swarm-worker.js",
+      "deploy.js",
+      "server.js",
+      "index-*.js",
+      "generate-*.js"
     ],
     "headers": [
       {
