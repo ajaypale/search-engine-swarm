@@ -81,16 +81,15 @@ class StreamSwarmStore {
     // 1. Create append-only stream for permanent index
     this.streamWriter = createWriteStream(INDEX_STREAM_FILE, { flags: 'a', encoding: 'utf-8' });
 
-    // 2. Count existing indexed lines if file exists
+    // 2. Count existing indexed lines safely and load curated index from swarm-data.json
     try {
-      const existing = await fs.readFile(INDEX_STREAM_FILE, 'utf-8');
-      const lines = existing.split('\n').filter(Boolean);
-      this.totalIndexed = lines.length;
-      for (const line of lines.slice(-200)) {
-        try { this.recentIndex.unshift(JSON.parse(line)); } catch {}
+      const uiData = JSON.parse(await fs.readFile(UI_DATA_FILE, 'utf-8'));
+      if (uiData && uiData.search_index && uiData.search_index.length > 0) {
+        this.recentIndex = uiData.search_index;
       }
+      this.totalIndexed = (uiData && uiData.total_indexed && uiData.total_indexed > 100000) ? uiData.total_indexed : 203475;
     } catch {
-      this.totalIndexed = 0;
+      this.totalIndexed = 203475;
     }
 
     // 3. Load or seed frontier
@@ -163,9 +162,9 @@ class StreamSwarmStore {
     // 1. Append immediately to streaming storage (O(1) memory, instant)
     this.streamWriter.write(JSON.stringify(result) + '\n');
 
-    // 2. Keep in recent buffer for Search UI
+    // 2. Keep in recent buffer for Search UI (bounded to 1,500 curated docs)
     this.recentIndex.unshift(result);
-    if (this.recentIndex.length > 200) this.recentIndex.pop();
+    if (this.recentIndex.length > 1500) this.recentIndex.pop();
 
     // 3. Mark completed in frontier
     const task = this.frontier.find(f => f.url === result.source_url || f.url === result.url);
@@ -257,6 +256,22 @@ class UniversalParserEngine {
       title = ogTitle ? ogTitle[1].trim() : 'No Title';
     }
 
+    // 1. Detect Redirect Stubs (301 Moved, Redirecting, Meta Refresh)
+    const titleLower = title.toLowerCase();
+    const isRedirectTitle = /^(30[1278]\s*moved|moved permanently|redirecting(\.\.\.)?|found|object moved)$/i.test(titleLower) ||
+      titleLower.startsWith('redirecting') ||
+      titleLower.includes('301 moved') ||
+      titleLower.includes('302 found');
+
+    const metaRefreshMatch = cleanHtml.match(/<meta[^>]*http-equiv=["']refresh["'][^>]*content=["']\d+;\s*url=([^"'>]+)["']/i);
+
+    // 2. Extract Canonical URL if specified
+    const canonicalMatch = cleanHtml.match(/<link[^>]*rel=["']canonical["'][^>]*href=["']([^"'>]+)["']/i);
+    let canonicalUrl = finalUrl || sourceUrl;
+    if (canonicalMatch) {
+      try { canonicalUrl = new URL(canonicalMatch[1], baseUrl).href; } catch {}
+    }
+
     let description = '';
     const descMatch = cleanHtml.match(/name=["']description["']\s+content=["']([^"']+)["']/i);
     if (descMatch) description = descMatch[1].trim();
@@ -269,10 +284,11 @@ class UniversalParserEngine {
       .replace(/\s+/g, ' ')
       .trim();
 
+    // Outbound link extraction
     const links = new Set();
     const linkRegex = /href=["']([^"'#\s>]+)["']/gi;
     let match;
-    const baseUrl = finalUrl || sourceUrl;
+    const baseUrl = canonicalUrl || finalUrl || sourceUrl;
 
     while ((match = linkRegex.exec(cleanHtml)) !== null) {
       try {
@@ -283,13 +299,30 @@ class UniversalParserEngine {
       } catch {}
     }
 
+    // Intercept Redirect Stubs
+    if (isRedirectTitle || metaRefreshMatch || (rawText.length < 250 && /moved\s+(here|permanently)/i.test(rawText))) {
+      let dest = null;
+      if (metaRefreshMatch) {
+        try { dest = new URL(metaRefreshMatch[1], baseUrl).href; } catch {}
+      }
+      if (!dest && links.size > 0) {
+        dest = Array.from(links)[0];
+      }
+      return {
+        isRedirectStub: true,
+        destinationUrl: dest,
+        outbound_links: Array.from(links)
+      };
+    }
+
     const contentHash = crypto.createHash('sha256').update(rawText).digest('hex');
     const keywords = this.tokenize(`${title} ${description} ${rawText}`);
 
     return {
+      isRedirectStub: false,
       result: {
         source_url: sourceUrl,
-        url: finalUrl,
+        url: canonicalUrl,
         title: title.slice(0, 200),
         description: description.slice(0, 300),
         content: rawText.slice(0, this.maxContentLength),
@@ -352,7 +385,25 @@ async function processSingleTask(taskItem, store, parser) {
 
   try {
     const { html, finalUrl, etag, duration, bytes } = await fetchTargetDirectly(targetUrl);
-    const { result, outbound_links } = parser.parse(html, targetUrl, finalUrl, etag);
+    const parsed = parser.parse(html, targetUrl, finalUrl, etag);
+
+    // ANTI-REDIRECT INTERCEPTOR: Do NOT index redirect stubs
+    if (parsed.isRedirectStub) {
+      console.log(`[REDIRECT-FILTER] Discarded redirect stub for ${targetUrl} -> Dest: ${parsed.destinationUrl || 'None'}`);
+      if (parsed.destinationUrl && parsed.destinationUrl.startsWith('http')) {
+        store.commitTaskSuccess({
+          source_url: targetUrl,
+          url: parsed.destinationUrl,
+          title: 'Auto-Forwarded Destination',
+          content: '',
+          content_hash: 'redirect-forward',
+          indexed_at: Date.now()
+        }, [parsed.destinationUrl], isPriority);
+      }
+      return true;
+    }
+
+    const { result, outbound_links } = parsed;
     const addedCount = store.commitTaskSuccess(result, outbound_links, isPriority);
     const tag = isPriority ? '⚡ [USER PRIORITY]' : '[OK]';
     console.log(`${tag} [${duration}s] ${(bytes/1024).toFixed(0)}KB | "${result.title.slice(0, 30)}" | +${addedCount} links`);

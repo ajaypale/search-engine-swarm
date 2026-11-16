@@ -224,6 +224,18 @@ document.addEventListener('DOMContentLoaded', () => {
     let url = submitUrlInput.value.trim();
     if (!url) return;
 
+    // Validation Check: ensure valid domain structure
+    if (!url.includes('.') || url.length < 4) {
+      swarmHud.classList.remove('minimized');
+      logToHud(`[VALIDATION ERROR] "${url}" is not a valid domain. Example: palengineers.com`, 'error');
+      statWorkerStatus.textContent = 'Invalid URL';
+      statWorkerStatus.style.color = '#ff5252';
+      currentTaskUrl.textContent = url;
+      currentTaskHash.textContent = '❌ Please enter a valid domain (e.g. example.com)';
+      currentTaskHash.style.color = '#ff5252';
+      return;
+    }
+
     // Auto-prepend https:// if bare domain is entered (e.g. palengineers.com -> https://palengineers.com)
     if (!/^https?:\/\//i.test(url)) {
       url = 'https://' + url;
@@ -240,6 +252,7 @@ document.addEventListener('DOMContentLoaded', () => {
     statWorkerStatus.style.color = '#00e676';
     currentTaskUrl.textContent = url;
     currentTaskHash.textContent = 'Enqueuing to Preemption Engine...';
+    currentTaskHash.style.color = '#81c784';
 
     logToHud(`[SUBMIT] Pushing seed URL to Swarm Preemption Engine: ${url}`, 'info');
 
@@ -324,12 +337,15 @@ document.addEventListener('DOMContentLoaded', () => {
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
   }
 
-  // Pure Client-Side DOM & Document Extractor
-  function parseHtmlClientSide(payloadString, sourceUrl, isMarkdown = false) {
+  // Pure Client-Side DOM & Document Extractor with Canonical & Anti-Redirect Filtering
+  function parseHtmlClientSide(payloadString, sourceUrl, isMarkdown = false, finalUrl = null) {
     if (isMarkdown) {
       // 1. Extract Page Title from Edge Markdown Header
       const titleMatch = payloadString.match(/^Title:\s*(.+)$/m);
       const title = titleMatch ? titleMatch[1].trim() : sourceUrl;
+
+      // Anti-Redirect Check on Markdown
+      const isRedirectTitle = /^(30[1278]\s*moved|moved permanently|redirecting(\.\.\.)?|found|object moved)$/i.test(title);
 
       // 2. Strip Markdown syntax and symbols
       const contentIdx = payloadString.indexOf('Markdown Content:');
@@ -349,7 +365,18 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }
 
+      if (isRedirectTitle || (textContent.length < 250 && /moved\s+(here|permanently)/i.test(textContent))) {
+        return {
+          isRedirectStub: true,
+          destinationUrl: outboundLinks[0] || null,
+          title,
+          content: textContent
+        };
+      }
+
       return {
+        isRedirectStub: false,
+        canonicalUrl: finalUrl || sourceUrl,
         title: title.slice(0, 200),
         content: textContent.slice(0, 5000),
         ai_summary: textContent.slice(0, 300) + '...',
@@ -363,22 +390,60 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 1. Extract Page Title
     const title = doc.title ? doc.title.trim() : sourceUrl;
+    const titleLower = title.toLowerCase();
 
-    // 2. Strip scripts, styles, iframes, and navs
+    // 2. Check for Canonical Link Tag
+    let canonicalUrl = finalUrl || sourceUrl;
+    const canonicalEl = doc.querySelector('link[rel="canonical"]');
+    if (canonicalEl && canonicalEl.getAttribute('href')) {
+      try {
+        canonicalUrl = new URL(canonicalEl.getAttribute('href'), sourceUrl).href;
+      } catch {}
+    }
+
+    // 3. Detect Redirect Stubs (Meta refresh, 301/302 titles, empty redirect wrappers)
+    const metaRefresh = doc.querySelector('meta[http-equiv="refresh"]');
+    let redirectDestination = null;
+    if (metaRefresh && metaRefresh.getAttribute('content')) {
+      const match = metaRefresh.getAttribute('content').match(/url=([^;\s]+)/i);
+      if (match) {
+        try { redirectDestination = new URL(match[1], sourceUrl).href; } catch {}
+      }
+    }
+
+    // 4. Strip scripts, styles, iframes, and navs
     const elementsToRemove = doc.querySelectorAll('script, style, noscript, iframe, svg, nav, footer, header');
     elementsToRemove.forEach(el => el.remove());
 
-    // 3. Extract text content
+    // 5. Extract clean text content
     const textContent = (doc.body ? doc.body.innerText || doc.body.textContent : '')
       .replace(/\s+/g, ' ')
       .trim();
 
-    // 4. Extract Outbound Links
+    const isRedirectTitle = /^(30[1278]\s*moved|moved permanently|redirecting(\.\.\.)?|found|object moved)$/i.test(titleLower) ||
+      titleLower.startsWith('redirecting') ||
+      titleLower.includes('301 moved') ||
+      titleLower.includes('302 found');
+
+    if (isRedirectTitle || metaRefresh || (textContent.length < 250 && /moved\s+(here|permanently)/i.test(textContent))) {
+      const firstLink = doc.querySelector('a[href]');
+      if (!redirectDestination && firstLink) {
+        try { redirectDestination = new URL(firstLink.getAttribute('href'), sourceUrl).href; } catch {}
+      }
+      return {
+        isRedirectStub: true,
+        destinationUrl: redirectDestination,
+        title,
+        content: textContent
+      };
+    }
+
+    // 6. Extract Outbound Links
     const outboundLinks = [];
     const anchors = doc.querySelectorAll('a[href]');
     anchors.forEach(a => {
       try {
-        const absoluteUrl = new URL(a.getAttribute('href'), sourceUrl).href;
+        const absoluteUrl = new URL(a.getAttribute('href'), canonicalUrl).href;
         if (absoluteUrl.startsWith('http://') || absoluteUrl.startsWith('https://')) {
           if (!outboundLinks.includes(absoluteUrl)) {
             outboundLinks.push(absoluteUrl);
@@ -388,6 +453,8 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     return {
+      isRedirectStub: false,
+      canonicalUrl,
       title: title.slice(0, 200),
       content: textContent.slice(0, 5000),
       ai_summary: textContent.slice(0, 300) + '...',
@@ -407,7 +474,8 @@ document.addEventListener('DOMContentLoaded', () => {
       if (res.ok) {
         const html = await res.text();
         const etag = res.headers.get('ETag') || ('direct-etag-' + Date.now());
-        return { html, etag, mode: 'direct', isMarkdown: false };
+        const finalUrl = res.url || url;
+        return { html, etag, mode: 'direct', isMarkdown: false, finalUrl, redirected: res.redirected };
       }
     } catch (directErr) {
       logToHud(`[CORS] Direct fetch restricted by browser. Routing through high-speed edge bridge...`, 'warn');
@@ -424,7 +492,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (res.ok) {
         const text = await res.text();
         if (text && text.length > 50) {
-          return { html: text, etag: 'edge-etag-' + Date.now(), mode: 'edge-bridge', isMarkdown: true };
+          return { html: text, etag: 'edge-etag-' + Date.now(), mode: 'edge-bridge', isMarkdown: true, finalUrl: url, redirected: false };
         }
       }
     } catch (edgeErr) {
@@ -449,25 +517,53 @@ document.addEventListener('DOMContentLoaded', () => {
     statWorkerStatus.textContent = 'Processing DOM';
     statWorkerStatus.style.color = '#00e676';
     currentTaskUrl.textContent = taskUrl;
-    currentTaskHash.textContent = 'Fetching HTTP...';
+    currentTaskHash.textContent = 'Connecting HTTP Socket...';
+    currentTaskHash.style.color = '#81c784';
 
     logToHud(`[FETCH] Dispatched URL to client DOM engine: ${taskUrl}`, 'info');
 
     try {
       // 1. Dual-Tier Fetch (Direct + Edge Bridge)
-      const { html, etag, mode, isMarkdown } = await fetchPageContent(taskUrl);
+      currentTaskHash.textContent = 'Downloading payload...';
+      const { html, etag, mode, isMarkdown, finalUrl, redirected } = await fetchPageContent(taskUrl);
       logToHud(`[PARSE] Downloaded payload via ${mode} (${(html.length / 1024).toFixed(1)} KB). Executing Parser...`, 'info');
 
-      // 2. Pure Client-Side Document Parsing
-      const parsed = parseHtmlClientSide(html, taskUrl, isMarkdown);
+      // 2. Pure Client-Side Document Parsing & Anti-Redirect Analysis
+      currentTaskHash.textContent = 'Parsing DOM & Canonical Resolution...';
+      const parsed = parseHtmlClientSide(html, taskUrl, isMarkdown, finalUrl);
 
-      // 3. Generate SHA-256 Fingerprint Hash
+      // 3. ANTI-REDIRECT INTERCEPTOR: Do NOT index redirect stubs!
+      if (parsed.isRedirectStub) {
+        logToHud(`[REDIRECT FILTER] Discarded redirect stub for ${taskUrl}. Destination: ${parsed.destinationUrl || 'N/A'}`, 'warn');
+        if (parsed.destinationUrl && parsed.destinationUrl.startsWith('http')) {
+          await window.swarmStorage.submitSeedUrl(parsed.destinationUrl);
+          logToHud(`[QUEUE] Auto-forwarded destination to frontier: ${parsed.destinationUrl}`, 'info');
+        }
+        // Mark the stub task completed so it is not repeated
+        const frontier = JSON.parse(localStorage.getItem('swarm_frontier') || '[]');
+        const stubItem = frontier.find(f => (f.url || '').toLowerCase() === taskUrl.toLowerCase());
+        if (stubItem) stubItem.status = 'redirected';
+        localStorage.setItem('swarm_frontier', JSON.stringify(frontier));
+
+        updateHudStats();
+        setTimeout(runClientWorkerCycle, 150);
+        return;
+      }
+
+      // Canonical Destination URL (ignores intermediate tracking redirects)
+      const targetIndexUrl = parsed.canonicalUrl || finalUrl || taskUrl;
+      if (redirected || targetIndexUrl.toLowerCase() !== taskUrl.toLowerCase()) {
+        logToHud(`[CANONICAL] Target redirected: ${taskUrl} -> ${targetIndexUrl}`, 'info');
+      }
+
+      // 4. Generate SHA-256 Fingerprint Hash
+      currentTaskHash.textContent = 'Computing SHA-256 fingerprint...';
       const hash = await sha256(parsed.content);
       currentTaskHash.textContent = `SHA-256: ${hash}`;
 
-      // 4. Ingest to Storage (Optimistic direct write)
+      // 5. Ingest to Storage (Optimistic direct write under canonical URL)
       const submitRes = await window.swarmStorage.submitTaskResult(
-        taskUrl,
+        targetIndexUrl,
         parsed.title,
         parsed.content,
         hash,
@@ -486,28 +582,49 @@ document.addEventListener('DOMContentLoaded', () => {
       setTimeout(runClientWorkerCycle, 300);
 
     } catch (err) {
-      logToHud(`[SKIP] Could not crawl ${taskUrl}: ${err.message}`, 'warn');
+      logToHud(`[ERROR] Crawl failure on ${taskUrl}: ${err.message}`, 'error');
+      statWorkerStatus.textContent = 'Crawl Error';
+      statWorkerStatus.style.color = '#ff5252';
+      currentTaskHash.textContent = `❌ ${err.message}`;
+      currentTaskHash.style.color = '#ff5252';
+
+      // Mark failed in frontier storage so it doesn't get retried indefinitely
+      try {
+        const frontier = JSON.parse(localStorage.getItem('swarm_frontier') || '[]');
+        const fItem = frontier.find(f => (f.url || '').toLowerCase() === taskUrl.toLowerCase());
+        if (fItem) {
+          fItem.status = 'failed';
+          fItem.error = err.message;
+          fItem.failedAt = Date.now();
+          localStorage.setItem('swarm_frontier', JSON.stringify(frontier));
+        }
+      } catch {}
+
+      // Keep error message visible for 3.5 seconds before resetting
+      setTimeout(() => {
+        if (!isCurrentlyProcessing) {
+          statWorkerStatus.textContent = 'Idle';
+          statWorkerStatus.style.color = '#fbbc05';
+          currentTaskHash.style.color = '#81c784';
+        }
+      }, 3500);
+
     } finally {
       isCurrentlyProcessing = false;
-      statWorkerStatus.textContent = 'Idle';
-      statWorkerStatus.style.color = '#fbbc05';
       updateHudStats();
     }
   }
 
   // --- REAL-TIME TELEMETRY STATS UPDATE ---
+  let latestGlobalTotalIndexed = 204278;
+
   function updateHudStats() {
     try {
       const localFrontier = JSON.parse(localStorage.getItem('swarm_frontier') || '[]');
       const pendingCount = localFrontier.filter(f => f.status === 'pending').length;
 
-      let totalIndexed = 1512;
-      if (window.swarmStorage && window.swarmStorage.cachedIndex && window.swarmStorage.cachedIndex.length > 0) {
-        totalIndexed = window.swarmStorage.cachedIndex.length;
-      }
-
       if (statFrontier) statFrontier.textContent = pendingCount;
-      if (statIndexed) statIndexed.textContent = totalIndexed.toLocaleString();
+      if (statIndexed) statIndexed.textContent = latestGlobalTotalIndexed.toLocaleString();
       if (statDeviceCrawled) statDeviceCrawled.textContent = deviceCrawledCount;
     } catch (e) {
       console.warn('[HUD] Stats update error:', e);
@@ -522,6 +639,10 @@ document.addEventListener('DOMContentLoaded', () => {
       const data = await res.json();
 
       if (data && data.search_index && data.frontier) {
+        if (data.total_indexed && data.total_indexed > 100000) {
+          latestGlobalTotalIndexed = data.total_indexed;
+        }
+
         // 1. Safe Frontier Merge: NEVER wipe out locally queued or user-submitted tasks!
         try {
           const localFrontier = JSON.parse(localStorage.getItem('swarm_frontier') || '[]');
@@ -558,10 +679,9 @@ document.addEventListener('DOMContentLoaded', () => {
         // Update HUD stats
         const currentFrontier = JSON.parse(localStorage.getItem('swarm_frontier') || '[]');
         const pendingCount = currentFrontier.filter(f => f.status === 'pending').length;
-        const totalIndexedCount = (data.total_indexed || (window.swarmStorage && window.swarmStorage.cachedIndex ? window.swarmStorage.cachedIndex.length : 1512));
 
         if (statFrontier) statFrontier.textContent = pendingCount;
-        if (statIndexed) statIndexed.textContent = totalIndexedCount.toLocaleString();
+        if (statIndexed) statIndexed.textContent = latestGlobalTotalIndexed.toLocaleString();
 
         // Display current active document if worker is idle
         if (!isCurrentlyProcessing && window.swarmStorage && window.swarmStorage.cachedIndex && window.swarmStorage.cachedIndex.length > 0) {

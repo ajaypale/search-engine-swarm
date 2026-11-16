@@ -21,6 +21,7 @@ console.log('='.repeat(75));
 
 let serverProc = null;
 let workerProc = null;
+let watcherProc = null;
 let isShuttingDown = false;
 
 function startServer() {
@@ -53,6 +54,21 @@ function startWorker() {
   });
 }
 
+function startAutoDeployWatcher() {
+  console.log('[DEPLOY] Booting Instant Live Auto-Deploy Daemon (Firebase CDN Auto-Sync)...');
+  watcherProc = spawn('node', [path.join(__dirname, 'auto-deploy.js')], {
+    stdio: 'inherit',
+    cwd: __dirname
+  });
+
+  watcherProc.on('exit', (code, signal) => {
+    if (!isShuttingDown) {
+      console.error(`[ALERT] Auto-Deploy Watcher exited (code: ${code}, signal: ${signal}). Auto-restarting in 2s...`);
+      setTimeout(startAutoDeployWatcher, 2000);
+    }
+  });
+}
+
 // Graceful cleanup
 function cleanup() {
   if (isShuttingDown) return;
@@ -60,23 +76,27 @@ function cleanup() {
   console.log('\n[SHUTDOWN] Terminating Swarm processes gracefully...');
   if (serverProc) serverProc.kill('SIGINT');
   if (workerProc) workerProc.kill('SIGINT');
+  if (watcherProc) watcherProc.kill('SIGINT');
   process.exit(0);
 }
 
 process.on('SIGINT', cleanup);
 process.on('SIGTERM', cleanup);
 
-// Boot both services
+// Boot all services
 startServer();
 // Slight offset to let server bind port first
 setTimeout(startWorker, 1200);
+setTimeout(startAutoDeployWatcher, 2000);
 
 setTimeout(() => {
   console.log('\n' + '─'.repeat(75));
   console.log('  ✅ SWARM ENGINE FULLY DEPLOYED & OPERATIONAL');
-  console.log('  🌐 Web Portal:    http://127.0.0.1:8080/index.html');
-  console.log('  🔍 Search API:    http://127.0.0.1:8080/api/search?q=alibaba');
-  console.log('  ⚡ Priority API:  POST http://127.0.0.1:8080/api/submit');
-  console.log('  📊 Telemetry:     http://127.0.0.1:8080/api/status');
+  console.log('  🌐 Local Web Portal:     http://127.0.0.1:8080/index.html');
+  console.log('  ☁️  Production Web App:   https://pal-swarm-search.web.app');
+  console.log('  ⚡ Instant Auto-Deploy:  ACTIVE (Watches files & deploys live instantly)');
+  console.log('  🔍 Fast Search API:      http://127.0.0.1:8080/api/search?q=alibaba');
+  console.log('  ⚡ Priority API:         POST http://127.0.0.1:8080/api/submit');
+  console.log('  📊 Live Telemetry:       http://127.0.0.1:8080/api/status');
   console.log('─'.repeat(75) + '\n');
-}, 3000);
+}, 3500);
