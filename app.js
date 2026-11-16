@@ -44,10 +44,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const terminalLog = document.getElementById('terminal-log');
   const btnClearLog = document.getElementById('btn-clear-log');
 
-  // Crawler State
-  let isCrawlerRunning = true;
+  // Crawler State (Idle by default to eliminate jitter; active on user submission or manual toggle)
+  let isCrawlerRunning = false;
   let deviceCrawledCount = 0;
   let isCurrentlyProcessing = false;
+  let hasUserSubmittedTask = false;
 
   // --- LOGGING HELPER ---
   function logToHud(message, type = 'info') {
@@ -278,16 +279,13 @@ document.addEventListener('DOMContentLoaded', () => {
       // Expected on static CDN deployments (Firebase Hosting) - fallback to direct client worker
     }
 
-    // 5. IMMEDIATE PREEMPTION: Execute crawler cycle immediately without waiting for interval
+    // 5. IMMEDIATE PREEMPTION: Execute crawler cycle specifically for this submitted site
+    hasUserSubmittedTask = true;
     logToHud(`[PREEMPTION] Prioritizing ${url} to Slot #1 - Launching Client DOM Engine...`, 'success');
-    if (!isCrawlerRunning) {
-      toggleCrawler.checked = true;
-      isCrawlerRunning = true;
-      statWorkerStatus.textContent = 'Active';
-      statWorkerStatus.style.color = '#00e676';
-    }
-    // Launch cycle immediately
-    setTimeout(runClientWorkerCycle, 50);
+    statWorkerStatus.textContent = 'Processing DOM';
+    statWorkerStatus.style.color = '#00e676';
+    // Launch cycle immediately specifically for this task
+    setTimeout(() => runClientWorkerCycle(true), 80);
   });
 
   // --- SETTINGS / CONFIG MODAL ---
@@ -323,9 +321,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
   toggleCrawler.addEventListener('change', () => {
     isCrawlerRunning = toggleCrawler.checked;
-    statWorkerStatus.textContent = isCrawlerRunning ? 'Idle' : 'Paused';
-    statWorkerStatus.style.color = isCrawlerRunning ? '#fbbc05' : '#8f909e';
-    logToHud(`[CONTROL] Client crawler worker ${isCrawlerRunning ? 'ENABLED' : 'PAUSED'}.`, isCrawlerRunning ? 'success' : 'warn');
+    statWorkerStatus.textContent = isCrawlerRunning ? 'Active (Crawling)' : 'Idle (Standby)';
+    statWorkerStatus.style.color = isCrawlerRunning ? '#00e676' : '#8f909e';
+    logToHud(`[CONTROL] Continuous client crawler ${isCrawlerRunning ? 'ENABLED' : 'PAUSED'}.`, isCrawlerRunning ? 'success' : 'warn');
+    if (isCrawlerRunning && !isCurrentlyProcessing) {
+      setTimeout(() => runClientWorkerCycle(false), 200);
+    }
   });
 
   // --- PHASE 2: PURE CLIENT-SIDE PARSING & CRAWLER WORKER ---
@@ -502,14 +503,16 @@ document.addEventListener('DOMContentLoaded', () => {
     throw new Error(`Target host blocked both direct fetch and edge bridge.`);
   }
 
-  // Main Autonomous Worker Loop
-  async function runClientWorkerCycle() {
-    if (!isCrawlerRunning || isCurrentlyProcessing) return;
+  // Main Autonomous Worker Loop (Controlled execution: priority on user submit, background on manual toggle)
+  async function runClientWorkerCycle(forceRun = false) {
+    if ((!isCrawlerRunning && !forceRun) || isCurrentlyProcessing) return;
 
     const taskUrl = await window.swarmStorage.getPendingTask();
     if (!taskUrl) {
-      statWorkerStatus.textContent = 'Idle (No Tasks)';
-      statWorkerStatus.style.color = '#8f909e';
+      if (!hasUserSubmittedTask) {
+        statWorkerStatus.textContent = 'Idle (Ready)';
+        statWorkerStatus.style.color = '#8f909e';
+      }
       return;
     }
 
@@ -546,7 +549,7 @@ document.addEventListener('DOMContentLoaded', () => {
         localStorage.setItem('swarm_frontier', JSON.stringify(frontier));
 
         updateHudStats();
-        setTimeout(runClientWorkerCycle, 150);
+        setTimeout(() => runClientWorkerCycle(forceRun), 150);
         return;
       }
 
@@ -559,7 +562,6 @@ document.addEventListener('DOMContentLoaded', () => {
       // 4. Generate SHA-256 Fingerprint Hash
       currentTaskHash.textContent = 'Computing SHA-256 fingerprint...';
       const hash = await sha256(parsed.content);
-      currentTaskHash.textContent = `SHA-256: ${hash}`;
 
       // 5. Ingest to Storage (Optimistic direct write under canonical URL)
       const submitRes = await window.swarmStorage.submitTaskResult(
@@ -573,13 +575,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
       deviceCrawledCount++;
       statDeviceCrawled.textContent = deviceCrawledCount;
+      currentTaskUrl.textContent = targetIndexUrl;
+      currentTaskHash.textContent = `SHA-256: ${hash}`;
+      currentTaskHash.style.color = '#00e676';
+      statWorkerStatus.textContent = 'Indexed & Searchable';
+      statWorkerStatus.style.color = '#00e676';
+
       logToHud(`[INGEST] "${parsed.title.slice(0, 32)}..." indexed! Found ${submitRes.newLinksAdded} outbound links.`, 'success');
       logToHud(`[DATABASE] Ingested to local swarm index. Instantly searchable!`, 'success');
 
       updateHudStats();
 
-      // Re-trigger immediately if there are more pending tasks in queue
-      setTimeout(runClientWorkerCycle, 300);
+      // Only schedule next cycle if continuous crawling is actively enabled by the user
+      if (isCrawlerRunning) {
+        setTimeout(() => runClientWorkerCycle(false), 2000);
+      }
 
     } catch (err) {
       logToHud(`[ERROR] Crawl failure on ${taskUrl}: ${err.message}`, 'error');
@@ -600,14 +610,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       } catch {}
 
-      // Keep error message visible for 3.5 seconds before resetting
-      setTimeout(() => {
-        if (!isCurrentlyProcessing) {
-          statWorkerStatus.textContent = 'Idle';
-          statWorkerStatus.style.color = '#fbbc05';
-          currentTaskHash.style.color = '#81c784';
-        }
-      }, 3500);
+      if (isCrawlerRunning) {
+        setTimeout(() => runClientWorkerCycle(false), 3000);
+      }
 
     } finally {
       isCurrentlyProcessing = false;
@@ -638,24 +643,26 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!res.ok) return;
       const data = await res.json();
 
-      if (data && data.search_index && data.frontier) {
+      if (data && data.search_index) {
         if (data.total_indexed && data.total_indexed > 100000) {
           latestGlobalTotalIndexed = data.total_indexed;
         }
 
-        // 1. Safe Frontier Merge: NEVER wipe out locally queued or user-submitted tasks!
-        try {
-          const localFrontier = JSON.parse(localStorage.getItem('swarm_frontier') || '[]');
-          const pendingLocal = localFrontier.filter(f => f.status === 'pending');
-          const mergedFrontier = [...pendingLocal];
+        // 1. Safe Frontier Merge: Only merge if frontier exists
+        if (data.frontier && Array.isArray(data.frontier)) {
+          try {
+            const localFrontier = JSON.parse(localStorage.getItem('swarm_frontier') || '[]');
+            const pendingLocal = localFrontier.filter(f => f.status === 'pending');
+            const mergedFrontier = [...pendingLocal];
 
-          for (const item of (data.frontier || [])) {
-            if (!mergedFrontier.some(f => (f.url || '').toLowerCase() === (item.url || '').toLowerCase())) {
-              mergedFrontier.push(item);
+            for (const item of data.frontier) {
+              if (!mergedFrontier.some(f => (f.url || '').toLowerCase() === (item.url || '').toLowerCase())) {
+                mergedFrontier.push(item);
+              }
             }
-          }
-          localStorage.setItem('swarm_frontier', JSON.stringify(mergedFrontier.slice(0, 150)));
-        } catch {}
+            localStorage.setItem('swarm_frontier', JSON.stringify(mergedFrontier.slice(0, 150)));
+          } catch {}
+        }
 
         // 2. Safe Index Merge: Keep locally crawled pages at the absolute top of the search index!
         try {
@@ -676,28 +683,13 @@ document.addEventListener('DOMContentLoaded', () => {
           console.warn('[STORAGE] LocalStorage quota reached, running purely in high-speed RAM mode.');
         }
 
-        // Update HUD stats
-        const currentFrontier = JSON.parse(localStorage.getItem('swarm_frontier') || '[]');
-        const pendingCount = currentFrontier.filter(f => f.status === 'pending').length;
-
-        if (statFrontier) statFrontier.textContent = pendingCount;
-        if (statIndexed) statIndexed.textContent = latestGlobalTotalIndexed.toLocaleString();
-
-        // Display current active document if worker is idle
-        if (!isCurrentlyProcessing && window.swarmStorage && window.swarmStorage.cachedIndex && window.swarmStorage.cachedIndex.length > 0) {
-          const latestDoc = window.swarmStorage.cachedIndex[0];
-          currentTaskUrl.textContent = latestDoc.url;
-          currentTaskHash.textContent = `SHA-256: ${latestDoc.content_hash || 'verified'}`;
-        }
+        // Update HUD stats smoothly
+        updateHudStats();
       }
     } catch {
       // Fallback to local store
     }
   }
-
-  // Poll swarm-data.json every 2 seconds
-  syncWithSwarmData();
-  setInterval(syncWithSwarmData, 2000);
 
   // Helper formatting functions
   function escapeHtml(str) {
@@ -717,8 +709,8 @@ document.addEventListener('DOMContentLoaded', () => {
     return highlighted + '...';
   }
 
-  // Initial setup and recurring tick
+  // Initial setup and recurring calm telemetry tick (every 5 seconds)
   updateHudStats();
-  setInterval(runClientWorkerCycle, 4000); // Poll task queue every 4 seconds
-  setInterval(updateHudStats, 3000);
+  syncWithSwarmData();
+  setInterval(syncWithSwarmData, 5000);
 });
