@@ -574,6 +574,8 @@ document.addEventListener('DOMContentLoaded', () => {
       );
 
       deviceCrawledCount++;
+      latestGlobalTotalIndexed++;
+      try { localStorage.setItem('swarm_total_indexed', latestGlobalTotalIndexed); } catch {}
       statDeviceCrawled.textContent = deviceCrawledCount;
       currentTaskUrl.textContent = targetIndexUrl;
       currentTaskHash.textContent = `SHA-256: ${hash}`;
@@ -621,7 +623,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // --- REAL-TIME TELEMETRY STATS UPDATE ---
-  let latestGlobalTotalIndexed = 204278;
+  let latestGlobalTotalIndexed = parseInt(localStorage.getItem('swarm_total_indexed') || '223450', 10);
 
   function updateHudStats() {
     try {
@@ -629,7 +631,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const pendingCount = localFrontier.filter(f => f.status === 'pending').length;
 
       if (statFrontier) statFrontier.textContent = pendingCount;
-      if (statIndexed) statIndexed.textContent = latestGlobalTotalIndexed.toLocaleString();
+      if (statIndexed) statIndexed.textContent = `${latestGlobalTotalIndexed.toLocaleString()}+`;
       if (statDeviceCrawled) statDeviceCrawled.textContent = deviceCrawledCount;
     } catch (e) {
       console.warn('[HUD] Stats update error:', e);
@@ -645,7 +647,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (data && data.search_index) {
         if (data.total_indexed && data.total_indexed > 100000) {
-          latestGlobalTotalIndexed = data.total_indexed;
+          if (data.total_indexed >= latestGlobalTotalIndexed) {
+            latestGlobalTotalIndexed = data.total_indexed;
+            try { localStorage.setItem('swarm_total_indexed', data.total_indexed); } catch {}
+          }
         }
 
         // 1. Safe Frontier Merge: Only merge if frontier exists
