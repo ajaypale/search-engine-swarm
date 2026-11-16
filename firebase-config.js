@@ -26,14 +26,27 @@ class SwarmStorageAdapter {
   initLocalStore() {
     this.cachedIndex = null;
     // Attempt to load from swarm-data.json if present
-    fetch('swarm-data.json')
+    fetch('swarm-data.json?t=' + Date.now())
       .then(r => r.json())
       .then(fileData => {
         if (fileData && fileData.search_index && fileData.search_index.length > 0) {
-          this.cachedIndex = fileData.search_index;
+          // Merge any locally crawled pages in localStorage at the front
+          let localIndex = [];
           try {
-            localStorage.setItem('swarm_index', JSON.stringify(fileData.search_index.slice(0, 100)));
-            localStorage.setItem('swarm_frontier', JSON.stringify(fileData.frontier.slice(0, 100)));
+            localIndex = JSON.parse(localStorage.getItem('swarm_index') || '[]');
+          } catch {}
+
+          const merged = [...localIndex];
+          for (const doc of fileData.search_index) {
+            if (!merged.some(m => (m.url || '').toLowerCase() === (doc.url || '').toLowerCase())) {
+              merged.push(doc);
+            }
+          }
+
+          this.cachedIndex = merged;
+
+          try {
+            localStorage.setItem('swarm_index', JSON.stringify(merged.slice(0, 100)));
           } catch {}
         }
       })
@@ -41,9 +54,10 @@ class SwarmStorageAdapter {
 
     if (!localStorage.getItem('swarm_frontier')) {
       const initialFrontier = [
-        { url: 'https://news.ycombinator.com/', status: 'pending', addedAt: Date.now() },
-        { url: 'https://en.wikipedia.org/wiki/Distributed_computing', status: 'pending', addedAt: Date.now() },
-        { url: 'https://github.com/trending', status: 'pending', addedAt: Date.now() }
+        { url: 'https://palengineers.com/', status: 'pending', isPriority: true, addedAt: Date.now() },
+        { url: 'https://www.alibaba.com/', status: 'pending', addedAt: Date.now() },
+        { url: 'https://fastapi.tiangolo.com/', status: 'pending', addedAt: Date.now() },
+        { url: 'https://news.ycombinator.com/', status: 'pending', addedAt: Date.now() }
       ];
       localStorage.setItem('swarm_frontier', JSON.stringify(initialFrontier));
     }
@@ -81,13 +95,17 @@ class SwarmStorageAdapter {
 
   async getPendingTask() {
     if (this.mode === 'firebase' && this.isLiveFirebaseReady) {
-      // In live Firebase: query firestore collection 'frontier' where status == 'pending' limit 1
       return null;
     }
 
-    // Local Store implementation
+    // Local Store implementation with Priority Preemption
     const frontier = JSON.parse(localStorage.getItem('swarm_frontier') || '[]');
-    const task = frontier.find(item => item.status === 'pending');
+    // Look for high-priority user-submitted task first
+    let task = frontier.find(item => item.status === 'pending' && item.isPriority);
+    if (!task) {
+      task = frontier.find(item => item.status === 'pending');
+    }
+
     if (task) {
       task.status = 'processing';
       task.assignedTo = this.deviceId;
@@ -101,9 +119,9 @@ class SwarmStorageAdapter {
   async submitTaskResult(url, title, content, contentHash, etag, outboundLinks) {
     // 1. Save or replace in Search Index
     const index = JSON.parse(localStorage.getItem('swarm_index') || '[]');
-    const keywords = this.extractKeywords(title + ' ' + content);
+    const keywords = this.extractKeywords(title + ' ' + content + ' ' + url);
     
-    const existingIdx = index.findIndex(doc => doc.url === url);
+    const existingIdx = index.findIndex(doc => (doc.url || '').toLowerCase() === url.toLowerCase());
     const newDoc = {
       url,
       title,
@@ -111,7 +129,7 @@ class SwarmStorageAdapter {
       keywords,
       content_hash: contentHash,
       etag: etag || 'N/A',
-      verification_status: 'verified', // Optimistic immediate verification for demo
+      verification_status: 'verified',
       indexedAt: Date.now(),
       submittedBy: this.deviceId
     };
@@ -123,9 +141,16 @@ class SwarmStorageAdapter {
     }
     localStorage.setItem('swarm_index', JSON.stringify(index));
 
+    // CRITICAL: Immediately update in-memory cachedIndex so search finds it instantly!
+    if (!this.cachedIndex) {
+      this.cachedIndex = [];
+    }
+    this.cachedIndex = this.cachedIndex.filter(d => (d.url || '').toLowerCase() !== url.toLowerCase());
+    this.cachedIndex.unshift(newDoc);
+
     // 2. Mark completed in frontier and push new links
     const frontier = JSON.parse(localStorage.getItem('swarm_frontier') || '[]');
-    const frontierItem = frontier.find(f => f.url === url);
+    const frontierItem = frontier.find(f => (f.url || '').toLowerCase() === url.toLowerCase());
     if (frontierItem) {
       frontierItem.status = 'completed';
       frontierItem.completedAt = Date.now();
@@ -133,7 +158,7 @@ class SwarmStorageAdapter {
 
     let addedCount = 0;
     outboundLinks.forEach(link => {
-      if (!frontier.some(f => f.url === link)) {
+      if (!frontier.some(f => (f.url || '').toLowerCase() === link.toLowerCase())) {
         frontier.push({
           url: link,
           status: 'pending',
@@ -145,7 +170,7 @@ class SwarmStorageAdapter {
     });
 
     localStorage.setItem('swarm_frontier', JSON.stringify(frontier));
-    return { success: true, newLinksAdded: addedCount };
+    return { success: true, newLinksAdded: addedCount, doc: newDoc };
   }
 
   async submitSeedUrl(url) {
@@ -155,17 +180,17 @@ class SwarmStorageAdapter {
     }
 
     const frontier = JSON.parse(localStorage.getItem('swarm_frontier') || '[]');
-    if (frontier.some(f => f.url === cleanUrl)) {
-      return { success: false, message: 'URL is already in the frontier queue.' };
-    }
-    frontier.unshift({
+    // Filter out previous entry if any to re-promote to Slot #1
+    const filtered = frontier.filter(f => (f.url || '').toLowerCase() !== cleanUrl.toLowerCase());
+    filtered.unshift({
       url: cleanUrl,
       status: 'pending',
+      isPriority: true,
       addedAt: Date.now(),
       discoveredBy: 'user_submission'
     });
-    localStorage.setItem('swarm_frontier', JSON.stringify(frontier));
-    return { success: true, message: `Pushed ${cleanUrl} to frontier queue.` };
+    localStorage.setItem('swarm_frontier', JSON.stringify(filtered));
+    return { success: true, message: `Pushed ${cleanUrl} to Priority Frontier Queue (Slot #1).` };
   }
 
   // --- SEARCH QUERY OPERATIONS ---
@@ -205,10 +230,25 @@ class SwarmStorageAdapter {
       }
     }
 
-    const searchCandidates = this.expandQueryTerms(q);
-    const rawTerms = q.split(/\s+/).filter(Boolean);
+    // Merge any locally crawled pages that might be stored in localStorage
+    try {
+      const localDocs = JSON.parse(localStorage.getItem('swarm_index') || '[]');
+      for (const lDoc of localDocs) {
+        if (!index.some(d => (d.url || '').toLowerCase() === (lDoc.url || '').toLowerCase())) {
+          index.unshift(lDoc);
+        }
+      }
+    } catch {}
 
-    // Advanced relevance-ranked matching with whole-word boundary protection
+    // Domain & Subdomain Extraction
+    // Handles: "palengineers.com", "https://palengineers.com/", "www.alibaba.com", "fastapi.tiangolo.com"
+    const cleanHost = q.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/.*$/, '').trim();
+    const isDomainQuery = cleanHost.includes('.') && cleanHost.length >= 4;
+    const domainCore = cleanHost.split('.')[0]; // e.g. "palengineers"
+
+    const searchCandidates = this.expandQueryTerms(q);
+
+    // Advanced relevance-ranked matching with Domain Authority Boost
     const results = index.map(doc => {
       let score = 0;
       const lowerTitle = (doc.title || '').toLowerCase();
@@ -216,14 +256,39 @@ class SwarmStorageAdapter {
       const lowerUrl = (doc.url || '').toLowerCase();
       const keywords = (doc.keywords || []).map(k => String(k).toLowerCase());
 
-      // 1. Direct Whole-Phrase Match
-      if (lowerTitle.includes(q)) score += 80;
-      if (lowerContent.includes(q)) score += 20;
+      // 1. Exact Domain / Subdomain Authority Match (+500 points)
+      if (isDomainQuery) {
+        if (lowerUrl.includes(cleanHost)) {
+          score += 500;
+        } else if (cleanHost.length > 5 && (lowerTitle.includes(cleanHost) || lowerContent.includes(cleanHost))) {
+          score += 250;
+        }
+      } else if (domainCore && domainCore.length >= 4) {
+        // Query is a pure brand/company name matching host (e.g. "palengineers", "indiamart")
+        if (lowerUrl.includes(domainCore)) {
+          score += 200;
+        }
+      }
 
-      // 2. Query Term Evaluation with Strict Word Boundary for Short Acronyms
+      // 2. Exact URL match (+600 points)
+      if (lowerUrl === q || lowerUrl === (q + '/') || lowerUrl === ('https://' + cleanHost + '/')) {
+        score += 600;
+      }
+
+      // 3. Direct Whole-Phrase Match
+      const isQueryShort = q.length <= 3;
+      if (isQueryShort) {
+        const wholeQueryRegex = new RegExp(`\\b${q}\\b`, 'i');
+        if (wholeQueryRegex.test(lowerTitle)) score += 100;
+        if (wholeQueryRegex.test(lowerContent)) score += 30;
+      } else {
+        if (lowerTitle.includes(q)) score += 80;
+        if (lowerContent.includes(q)) score += 20;
+      }
+
+      // 4. Query Term Evaluation with Strict Word Boundary for Short Acronyms
       for (const term of searchCandidates) {
         const isShort = term.length <= 3;
-        // Escape regex special chars
         const safeTerm = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const wordRegex = new RegExp(`\\b${safeTerm}\\b`, 'i');
 
@@ -231,8 +296,7 @@ class SwarmStorageAdapter {
         if (wordRegex.test(lowerTitle)) {
           score += 60;
         } else if (!isShort && lowerTitle.includes(term)) {
-          // Substring allowed ONLY for terms longer than 3 characters
-          score += 10;
+          score += 15;
         }
 
         // Whole-word match in content
@@ -242,9 +306,9 @@ class SwarmStorageAdapter {
           score += 5;
         }
 
-        // Whole-word match in keywords or URL
+        // Keywords or URL
         if (keywords.includes(term)) score += 30;
-        if (wordRegex.test(lowerUrl)) score += 40;
+        if (lowerUrl.includes(term)) score += 40;
       }
 
       return { ...doc, score };

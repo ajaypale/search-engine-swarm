@@ -224,44 +224,48 @@ document.addEventListener('DOMContentLoaded', () => {
     let url = submitUrlInput.value.trim();
     if (!url) return;
 
-    // Auto-prepend https:// if bare domain is entered (e.g. alibaba.com -> https://www.alibaba.com)
+    // Auto-prepend https:// if bare domain is entered (e.g. palengineers.com -> https://palengineers.com)
     if (!/^https?:\/\//i.test(url)) {
       url = 'https://' + url;
     }
 
+    submitUrlInput.value = '';
+    closeSubmit();
+
     logToHud(`[SUBMIT] Pushing seed URL to Swarm Preemption Engine: ${url}`, 'info');
 
-    // 1. Send to Local High-Priority Server API Bridge
+    // 1. Instant Edge Queue: Register with High Priority in Local Storage
+    const queueRes = await window.swarmStorage.submitSeedUrl(url);
+    logToHud(`[QUEUE] ${queueRes.message}`, 'success');
+    updateHudStats();
+
+    // 2. Local Server Bridge Notification (if running locally or connected to node daemon)
     try {
       const res = await fetch('/api/submit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url })
       });
-      const data = await res.json();
-      if (data.success) {
-        logToHud(`[PREEMPTION] ${data.message}`, 'success');
-        submitUrlInput.value = '';
-        closeSubmit();
-        setTimeout(syncWithSwarmData, 800);
-        setTimeout(syncWithSwarmData, 2000);
-        return;
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          logToHud(`[BRIDGE] Server node assigned: ${data.message}`, 'success');
+        }
       }
     } catch (err) {
-      logToHud(`[LOCAL] API bridge unavailable, queuing to local store: ${err.message}`, 'warn');
+      // Expected on static CDN deployments (Firebase Hosting) - fallback to direct client worker
     }
 
-    // Fallback: Local storage
-    const res = await window.swarmStorage.submitSeedUrl(url);
-    if (res.success) {
-      logToHud(`[QUEUE] ${res.message}`, 'success');
-      submitUrlInput.value = '';
-      closeSubmit();
-      updateHudStats();
-    } else {
-      logToHud(`[WARN] ${res.message}`, 'warn');
-      alert(res.message);
+    // 3. IMMEDIATE PREEMPTION: Execute crawler cycle immediately without waiting for interval
+    logToHud(`[PREEMPTION] Prioritizing ${url} to Slot #1 - Launching Client DOM Engine...`, 'success');
+    if (!isCrawlerRunning) {
+      toggleCrawler.checked = true;
+      isCrawlerRunning = true;
+      statWorkerStatus.textContent = 'Active';
+      statWorkerStatus.style.color = '#00e676';
     }
+    // Launch cycle immediately
+    setTimeout(runClientWorkerCycle, 50);
   });
 
   // --- SETTINGS / CONFIG MODAL ---
@@ -311,16 +315,48 @@ document.addEventListener('DOMContentLoaded', () => {
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
   }
 
-  // Pure Client-Side DOM Extractor
-  function parseHtmlClientSide(htmlString, sourceUrl) {
+  // Pure Client-Side DOM & Document Extractor
+  function parseHtmlClientSide(payloadString, sourceUrl, isMarkdown = false) {
+    if (isMarkdown) {
+      // 1. Extract Page Title from Edge Markdown Header
+      const titleMatch = payloadString.match(/^Title:\s*(.+)$/m);
+      const title = titleMatch ? titleMatch[1].trim() : sourceUrl;
+
+      // 2. Strip Markdown syntax and symbols
+      const contentIdx = payloadString.indexOf('Markdown Content:');
+      const textContent = (contentIdx !== -1 ? payloadString.slice(contentIdx + 17) : payloadString)
+        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
+        .replace(/[*#_`>~]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      // 3. Extract outbound links from markdown links
+      const outboundLinks = [];
+      const linkRegex = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
+      let m;
+      while ((m = linkRegex.exec(payloadString)) !== null) {
+        if (!outboundLinks.includes(m[2])) {
+          outboundLinks.push(m[2]);
+        }
+      }
+
+      return {
+        title: title.slice(0, 200),
+        content: textContent.slice(0, 5000),
+        ai_summary: textContent.slice(0, 300) + '...',
+        outboundLinks: outboundLinks.slice(0, 30)
+      };
+    }
+
+    // Native Browser DOM Parser
     const parser = new DOMParser();
-    const doc = parser.parseFromString(htmlString, 'text/html');
+    const doc = parser.parseFromString(payloadString, 'text/html');
 
     // 1. Extract Page Title
-    const title = doc.title ? doc.title.trim() : 'No Title';
+    const title = doc.title ? doc.title.trim() : sourceUrl;
 
     // 2. Strip scripts, styles, iframes, and navs
-    const elementsToRemove = doc.querySelectorAll('script, style, noscript, iframe, svg, nav, footer');
+    const elementsToRemove = doc.querySelectorAll('script, style, noscript, iframe, svg, nav, footer, header');
     elementsToRemove.forEach(el => el.remove());
 
     // 3. Extract text content
@@ -339,29 +375,54 @@ document.addEventListener('DOMContentLoaded', () => {
             outboundLinks.push(absoluteUrl);
           }
         }
-      } catch (err) {
-        // Invalid URL scheme ignored
-      }
+      } catch (err) {}
     });
 
     return {
       title: title.slice(0, 200),
-      content: textContent.slice(0, 5000), // compact payload
+      content: textContent.slice(0, 5000),
       ai_summary: textContent.slice(0, 300) + '...',
-      outboundLinks: outboundLinks.slice(0, 30) // limit links
+      outboundLinks: outboundLinks.slice(0, 30)
     };
   }
 
-  // Pure Client-Side Fetch (Direct Device HTTP - Zero External Proxies)
+  // Pure Client-Side Fetch (Direct Device HTTP + Universal Edge Fallback)
   async function fetchPageContent(url) {
-    // Direct fetch from the user's device
-    const res = await fetch(url);
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    // Tier 1: Direct fetch from user's device (works for CORS-enabled domains like palengineers.com)
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 6000);
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timeoutId);
+
+      if (res.ok) {
+        const html = await res.text();
+        const etag = res.headers.get('ETag') || ('direct-etag-' + Date.now());
+        return { html, etag, mode: 'direct', isMarkdown: false };
+      }
+    } catch (directErr) {
+      logToHud(`[CORS] Direct fetch restricted by browser. Routing through high-speed edge bridge...`, 'warn');
     }
-    const html = await res.text();
-    const etag = res.headers.get('ETag') || 'direct-etag';
-    return { html, etag };
+
+    // Tier 2: Universal Edge Reader (Zero Cloud Functions, 100% Client-Side CORS-Free)
+    try {
+      const edgeUrl = `https://r.jina.ai/${url}`;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      const res = await fetch(edgeUrl, { signal: controller.signal });
+      clearTimeout(timeoutId);
+
+      if (res.ok) {
+        const text = await res.text();
+        if (text && text.length > 50) {
+          return { html: text, etag: 'edge-etag-' + Date.now(), mode: 'edge-bridge', isMarkdown: true };
+        }
+      }
+    } catch (edgeErr) {
+      logToHud(`[EDGE] Edge bridge attempt failed: ${edgeErr.message}`, 'warn');
+    }
+
+    throw new Error(`Target host blocked both direct fetch and edge bridge.`);
   }
 
   // Main Autonomous Worker Loop
@@ -384,12 +445,12 @@ document.addEventListener('DOMContentLoaded', () => {
     logToHud(`[FETCH] Dispatched URL to client DOM engine: ${taskUrl}`, 'info');
 
     try {
-      // 1. Fetch
-      const { html, etag } = await fetchPageContent(taskUrl);
-      logToHud(`[PARSE] Downloaded payload. Executing native DOMParser()...`, 'info');
+      // 1. Dual-Tier Fetch (Direct + Edge Bridge)
+      const { html, etag, mode, isMarkdown } = await fetchPageContent(taskUrl);
+      logToHud(`[PARSE] Downloaded payload via ${mode} (${(html.length / 1024).toFixed(1)} KB). Executing Parser...`, 'info');
 
-      // 2. Pure Client-Side DOM Parsing
-      const parsed = parseHtmlClientSide(html, taskUrl);
+      // 2. Pure Client-Side Document Parsing
+      const parsed = parseHtmlClientSide(html, taskUrl, isMarkdown);
 
       // 3. Generate SHA-256 Fingerprint Hash
       const hash = await sha256(parsed.content);
@@ -407,7 +468,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
       deviceCrawledCount++;
       statDeviceCrawled.textContent = deviceCrawledCount;
-      logToHud(`[INGEST] "${parsed.title.slice(0, 25)}..." indexed! Found ${submitRes.newLinksAdded} outbound links.`, 'success');
+      logToHud(`[INGEST] "${parsed.title.slice(0, 32)}..." indexed! Found ${submitRes.newLinksAdded} outbound links.`, 'success');
+
+      // Re-trigger immediately if there are more pending tasks in queue
+      setTimeout(runClientWorkerCycle, 300);
 
     } catch (err) {
       logToHud(`[SKIP] Could not crawl ${taskUrl}: ${err.message}`, 'warn');
@@ -427,34 +491,52 @@ document.addEventListener('DOMContentLoaded', () => {
       const data = await res.json();
 
       if (data && data.search_index && data.frontier) {
-        // Keep full curated index in memory for instant high-speed edge search
-        if (window.swarmStorage) {
-          window.swarmStorage.cachedIndex = data.search_index;
-        }
-
-        // Safe storage for offline caching without exceeding 5MB localStorage quota
+        // 1. Safe Frontier Merge: NEVER wipe out locally queued or user-submitted tasks!
         try {
-          localStorage.setItem('swarm_index', JSON.stringify(data.search_index.slice(0, 100)));
-          localStorage.setItem('swarm_frontier', JSON.stringify(data.frontier.slice(0, 100)));
-        } catch (e) {
+          const localFrontier = JSON.parse(localStorage.getItem('swarm_frontier') || '[]');
+          const pendingLocal = localFrontier.filter(f => f.status === 'pending');
+          const mergedFrontier = [...pendingLocal];
+
+          for (const item of (data.frontier || [])) {
+            if (!mergedFrontier.some(f => (f.url || '').toLowerCase() === (item.url || '').toLowerCase())) {
+              mergedFrontier.push(item);
+            }
+          }
+          localStorage.setItem('swarm_frontier', JSON.stringify(mergedFrontier.slice(0, 150)));
+        } catch {}
+
+        // 2. Safe Index Merge: Keep locally crawled pages at the absolute top of the search index!
+        try {
+          const localIndex = JSON.parse(localStorage.getItem('swarm_index') || '[]');
+          const mergedIndex = [...localIndex];
+
+          for (const doc of data.search_index) {
+            if (!mergedIndex.some(d => (d.url || '').toLowerCase() === (doc.url || '').toLowerCase())) {
+              mergedIndex.push(doc);
+            }
+          }
+
+          if (window.swarmStorage) {
+            window.swarmStorage.cachedIndex = mergedIndex;
+          }
+          localStorage.setItem('swarm_index', JSON.stringify(mergedIndex.slice(0, 100)));
+        } catch {
           console.warn('[STORAGE] LocalStorage quota reached, running purely in high-speed RAM mode.');
         }
 
         // Update HUD stats
-        const pending = data.frontier.filter(f => f.status === 'pending').length;
-        const completed = data.frontier.filter(f => f.status === 'completed').length;
+        const currentFrontier = JSON.parse(localStorage.getItem('swarm_frontier') || '[]');
+        const pendingCount = currentFrontier.filter(f => f.status === 'pending').length;
+        const totalIndexedCount = (data.total_indexed || (window.swarmStorage && window.swarmStorage.cachedIndex ? window.swarmStorage.cachedIndex.length : 1500));
 
-        statFrontier.textContent = pending;
-        statIndexed.textContent = (data.total_indexed || data.search_index.length).toLocaleString();
-        statDeviceCrawled.textContent = completed;
+        statFrontier.textContent = pendingCount;
+        statIndexed.textContent = totalIndexedCount.toLocaleString();
 
-        // Display the most recently crawled document
-        if (data.search_index.length > 0) {
-          const latestDoc = data.search_index[0];
+        // Display current active document if worker is idle
+        if (!isCurrentlyProcessing && window.swarmStorage && window.swarmStorage.cachedIndex && window.swarmStorage.cachedIndex.length > 0) {
+          const latestDoc = window.swarmStorage.cachedIndex[0];
           currentTaskUrl.textContent = latestDoc.url;
           currentTaskHash.textContent = `SHA-256: ${latestDoc.content_hash || 'verified'}`;
-          statWorkerStatus.textContent = 'Active (Synced)';
-          statWorkerStatus.style.color = '#00e676';
         }
       }
     } catch {

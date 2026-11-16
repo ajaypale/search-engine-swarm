@@ -172,6 +172,11 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // Domain & Subdomain Extraction
+    const cleanHost = q.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/.*$/, '').trim();
+    const isDomainQuery = cleanHost.includes('.') && cleanHost.length >= 4;
+    const domainCore = cleanHost.split('.')[0];
+
     const expansions = {
       'ev': ['ev', 'evs', 'electric vehicle', 'electric vehicles', 'electric car', 'electric scooter', 'ev charger', 'battery pack'],
       'ai': ['ai', 'artificial intelligence', 'machine learning', 'deep learning', 'neural'],
@@ -196,7 +201,25 @@ const server = http.createServer(async (req, res) => {
 
       let score = 0;
 
-      // 1. Direct Whole-Phrase Match (Strict word-boundary for short queries <= 3 chars)
+      // 1. Exact Domain / Subdomain Authority Match (+500 points)
+      if (isDomainQuery) {
+        if (lowerUrl.includes(cleanHost)) {
+          score += 500;
+        } else if (cleanHost.length > 5 && (lowerTitle.includes(cleanHost) || lowerContent.includes(cleanHost))) {
+          score += 250;
+        }
+      } else if (domainCore && domainCore.length >= 4) {
+        if (lowerUrl.includes(domainCore)) {
+          score += 200;
+        }
+      }
+
+      // 2. Exact URL match (+600 points)
+      if (lowerUrl === q || lowerUrl === (q + '/') || lowerUrl === ('https://' + cleanHost + '/')) {
+        score += 600;
+      }
+
+      // 3. Direct Whole-Phrase Match
       const isQueryShort = q.length <= 3;
       if (isQueryShort) {
         const wholeQueryRegex = new RegExp(`\\b${q}\\b`, 'i');
@@ -207,7 +230,7 @@ const server = http.createServer(async (req, res) => {
         if (lowerContent.includes(q)) score += 20;
       }
 
-      // 2. Strict Word-Boundary Match for Acronyms & Candidates
+      // 4. Strict Word-Boundary Match for Acronyms & Candidates
       for (const term of searchCandidates) {
         const isShort = term.length <= 3;
         const safeTerm = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -216,7 +239,7 @@ const server = http.createServer(async (req, res) => {
         if (wordRegex.test(lowerTitle)) {
           score += 60;
         } else if (!isShort && lowerTitle.includes(term)) {
-          score += 10;
+          score += 15;
         }
 
         if (wordRegex.test(lowerContent)) {
@@ -225,7 +248,7 @@ const server = http.createServer(async (req, res) => {
           score += 5;
         }
 
-        if (wordRegex.test(lowerUrl)) score += 40;
+        if (lowerUrl.includes(term)) score += 40;
       }
 
       if (score > 0) {
